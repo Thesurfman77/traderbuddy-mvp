@@ -4,21 +4,97 @@ import { useRouter, useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { tradeStore, Trade } from "@/lib/store";
 
+interface AIReview {
+  grade?: "A" | "B" | "C" | "D" | "F";
+  summary?: string;
+  strengths?: string[];
+  mistakes?: string[];
+  rule_violations?: string[];
+  invalidation_triggers?: string[];
+  next_actions?: string[];
+  risk_flags?: string[];
+}
+
 export default function TradeDetailPage() {
   const router = useRouter();
   const params = useParams();
   const tradeId = params.id as string;
+
   const [trade, setTrade] = useState<Trade | null>(null);
+  const [aiReview, setAiReview] = useState<AIReview | null>(null);
+  const [isLoadingReview, setIsLoadingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   useEffect(() => {
     const foundTrade = tradeStore.getTradeById(tradeId);
     if (!foundTrade) {
-      // Trade not found, redirect to dashboard
       router.push("/dashboard");
       return;
     }
     setTrade(foundTrade);
+
+    // Load saved AI review if it exists
+    if ((foundTrade as any).ai_review) {
+      setAiReview((foundTrade as any).ai_review);
+    }
   }, [tradeId, router]);
+
+  const generateAIReview = async () => {
+    if (!trade) return;
+
+    setIsLoadingReview(true);
+    setReviewError(null);
+
+    try {
+      const response = await fetch("/api/analyze-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(trade),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || "Failed to generate AI review");
+      }
+
+      const data = await response.json();
+      setAiReview(data);
+
+      // Auto-save review onto trade
+      const updatedTrade = { ...trade, ai_review: data } as any;
+
+      if (typeof (tradeStore as any).updateTrade === "function") {
+        (tradeStore as any).updateTrade(tradeId, updatedTrade);
+      } else if (typeof (tradeStore as any).saveTrade === "function") {
+        (tradeStore as any).saveTrade(updatedTrade);
+      }
+
+      setTrade(updatedTrade);
+    } catch (err: any) {
+      setReviewError(err.message || "Error generating AI review");
+    } finally {
+      setIsLoadingReview(false);
+    }
+  };
+
+  const clearSavedReview = () => {
+    if (!trade) return;
+
+    setAiReview(null);
+    setReviewError(null);
+
+    // Clear saved review so old (no-grade) review won't come back
+    const updatedTrade = { ...(trade as any) };
+    delete updatedTrade.ai_review;
+
+    if (typeof (tradeStore as any).updateTrade === "function") {
+      (tradeStore as any).updateTrade(tradeId, updatedTrade);
+    } else if (typeof (tradeStore as any).saveTrade === "function") {
+      (tradeStore as any).saveTrade(updatedTrade);
+    }
+
+    setTrade(updatedTrade);
+  };
 
   if (!trade) {
     return (
@@ -28,207 +104,157 @@ export default function TradeDetailPage() {
     );
   }
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString("en-US", {
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(value);
-  };
-
-  const getPnLColor = (pnl?: number) => {
-    if (!pnl) return "text-gray-500";
-    return pnl >= 0 ? "text-green-600" : "text-red-600";
-  };
-
-  // Mocked AI Review data
-  const aiReview = {
-    strengths: [
-      "Good risk-reward ratio with proper stop loss placement",
-      "Entry timing aligned with market structure",
-      "Clear trade setup with defined levels",
-    ],
-    mistakes: [
-      "Could have taken partial profits earlier",
-      "Stop loss was slightly tight for volatility",
-    ],
-    nextActions: [
-      "Monitor similar setups in the same instrument",
-      "Review risk management rules for future trades",
-      "Consider scaling in/out strategies",
-    ],
-    riskFlags: [
-      trade.pnl && trade.pnl < 0 ? "Loss-making trade - review strategy" : null,
-      trade.rMultiple && trade.rMultiple < 0 ? "Negative R-multiple indicates poor risk management" : null,
-    ].filter(Boolean) as string[],
-  };
-
   return (
     <div className="min-h-screen bg-gray-50 py-8">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="mb-6">
-          <button
-            onClick={() => router.back()}
-            className="text-indigo-600 hover:text-indigo-800 font-medium mb-4"
-          >
-            ← Back
-          </button>
-          <h1 className="text-3xl font-bold text-gray-900">Trade Details</h1>
-        </div>
+      <div className="max-w-4xl mx-auto px-4">
+        <button
+          onClick={() => router.back()}
+          className="text-indigo-600 hover:text-indigo-800 font-medium mb-4"
+        >
+          ← Back
+        </button>
 
-        {/* Trade Information Card */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Instrument</h3>
-              <p className="text-lg font-semibold text-gray-900">{trade.instrument}</p>
-            </div>
+        <h1 className="text-3xl font-bold text-gray-900 mb-6">Trade Details</h1>
 
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Direction</h3>
-              <span
-                className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${
-                  trade.direction === "Long"
-                    ? "bg-green-100 text-green-800"
-                    : "bg-red-100 text-red-800"
-                }`}
+        {/* AI REVIEW */}
+        <div className="bg-white rounded-lg shadow-sm border p-6">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-gray-900">AI Review</h2>
+            {!aiReview && (
+              <button
+                onClick={generateAIReview}
+                disabled={isLoadingReview}
+                className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50"
               >
-                {trade.direction}
-              </span>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Entry Price</h3>
-              <p className="text-lg font-semibold text-gray-900">{trade.entryPrice}</p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Stop Price</h3>
-              <p className="text-lg font-semibold text-gray-900">{trade.stopPrice}</p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Take Profit Price</h3>
-              <p className="text-lg font-semibold text-gray-900">{trade.takeProfitPrice}</p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Exit Price</h3>
-              <p className="text-lg font-semibold text-gray-900">
-                {trade.exitPrice || "Not closed"}
-              </p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Quantity</h3>
-              <p className="text-lg font-semibold text-gray-900">{trade.quantity}</p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">PnL</h3>
-              <p className={`text-lg font-semibold ${getPnLColor(trade.pnl)}`}>
-                {trade.pnl !== undefined ? formatCurrency(trade.pnl) : "N/A"}
-              </p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">R-Multiple</h3>
-              <p className="text-lg font-semibold text-gray-900">
-                {trade.rMultiple !== undefined ? trade.rMultiple.toFixed(2) : "N/A"}
-              </p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Entry Time</h3>
-              <p className="text-sm text-gray-900">{formatDate(trade.entryTime)}</p>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-medium text-gray-500 mb-1">Exit Time</h3>
-              <p className="text-sm text-gray-900">{formatDate(trade.exitTime)}</p>
-            </div>
-          </div>
-
-          {trade.notes && (
-            <div className="mt-6 pt-6 border-t border-gray-200">
-              <h3 className="text-sm font-medium text-gray-500 mb-2">Notes</h3>
-              <p className="text-sm text-gray-900 whitespace-pre-wrap">{trade.notes}</p>
-            </div>
-          )}
-        </div>
-
-        {/* AI Review Section */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">AI Review</h2>
-
-          <div className="space-y-6">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center">
-                <span className="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
-                Strengths
-              </h3>
-              <ul className="list-disc list-inside space-y-2 text-gray-700">
-                {aiReview.strengths.map((strength, index) => (
-                  <li key={index}>{strength}</li>
-                ))}
-              </ul>
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center">
-                <span className="w-2 h-2 bg-yellow-500 rounded-full mr-2"></span>
-                Mistakes
-              </h3>
-              <ul className="list-disc list-inside space-y-2 text-gray-700">
-                {aiReview.mistakes.map((mistake, index) => (
-                  <li key={index}>{mistake}</li>
-                ))}
-              </ul>
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center">
-                <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
-                Next Actions
-              </h3>
-              <ul className="list-disc list-inside space-y-2 text-gray-700">
-                {aiReview.nextActions.map((action, index) => (
-                  <li key={index}>{action}</li>
-                ))}
-              </ul>
-            </div>
-
-            {aiReview.riskFlags.length > 0 && (
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center">
-                  <span className="w-2 h-2 bg-red-500 rounded-full mr-2"></span>
-                  Risk Flags
-                </h3>
-                <ul className="list-disc list-inside space-y-2 text-red-700">
-                  {aiReview.riskFlags.map((flag, index) => (
-                    <li key={index}>{flag}</li>
-                  ))}
-                </ul>
-              </div>
+                {isLoadingReview ? "Analyzing..." : "Generate AI Review"}
+              </button>
             )}
           </div>
 
-          <div className="mt-6 pt-6 border-t border-gray-200">
-            <p className="text-xs text-gray-500 italic">
-              * AI Review is currently mocked. Real AI analysis will be available in future updates.
-            </p>
-          </div>
+          {reviewError && (
+            <div className="bg-red-50 border border-red-200 p-4 rounded mb-6 text-red-700">
+              {reviewError}
+            </div>
+          )}
+
+          {!aiReview && !isLoadingReview && !reviewError && (
+            <div className="py-6 text-center text-gray-600">
+              Click <b>Generate AI Review</b> to analyze this trade.
+            </div>
+          )}
+
+          {aiReview && (
+            <div className="space-y-6">
+              {/* BIG GRADE */}
+              {aiReview.grade && (
+                <div className="flex items-center gap-4">
+                  <div
+                    className={`text-5xl font-bold px-6 py-3 rounded-lg ${
+                      aiReview.grade === "A"
+                        ? "bg-green-100 text-green-800"
+                        : aiReview.grade === "B"
+                        ? "bg-blue-100 text-blue-800"
+                        : aiReview.grade === "C"
+                        ? "bg-yellow-100 text-yellow-800"
+                        : aiReview.grade === "D"
+                        ? "bg-orange-100 text-orange-800"
+                        : "bg-red-100 text-red-800"
+                    }`}
+                  >
+                    {aiReview.grade}
+                  </div>
+                  <div className="text-gray-600">
+                    <p className="font-medium">Trade Quality Grade</p>
+                    <p className="text-sm">Based on process & risk discipline (not PnL)</p>
+                  </div>
+                </div>
+              )}
+
+              {aiReview.summary && (
+                <div>
+                  <h3 className="font-semibold text-lg mb-2">Summary</h3>
+                  <p className="text-gray-700">{aiReview.summary}</p>
+                </div>
+              )}
+
+              {aiReview.strengths?.length ? (
+                <div>
+                  <h3 className="font-semibold text-lg mb-2 text-green-700">Strengths</h3>
+                  <ul className="list-disc list-inside">
+                    {aiReview.strengths.map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {aiReview.mistakes?.length ? (
+                <div>
+                  <h3 className="font-semibold text-lg mb-2 text-yellow-700">Mistakes</h3>
+                  <ul className="list-disc list-inside">
+                    {aiReview.mistakes.map((m, i) => (
+                      <li key={i}>{m}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {aiReview.rule_violations?.length ? (
+                <div>
+                  <h3 className="font-semibold text-lg mb-2 text-orange-700">
+                    Rule Violations
+                  </h3>
+                  <ul className="list-disc list-inside">
+                    {aiReview.rule_violations.map((v, i) => (
+                      <li key={i}>{v}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {aiReview.invalidation_triggers?.length ? (
+                <div>
+                  <h3 className="font-semibold text-lg mb-2 text-purple-700">
+                    Trade Invalidation Triggers
+                  </h3>
+                  <ul className="list-disc list-inside">
+                    {aiReview.invalidation_triggers.map((t, i) => (
+                      <li key={i}>{t}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {aiReview.next_actions?.length ? (
+                <div>
+                  <h3 className="font-semibold text-lg mb-2 text-blue-700">Next Actions</h3>
+                  <ul className="list-disc list-inside">
+                    {aiReview.next_actions.map((a, i) => (
+                      <li key={i}>{a}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {aiReview.risk_flags?.length ? (
+                <div>
+                  <h3 className="font-semibold text-lg mb-2 text-red-700">Risk Flags</h3>
+                  <ul className="list-disc list-inside">
+                    {aiReview.risk_flags.map((r, i) => (
+                      <li key={i}>{r}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              <button
+                onClick={clearSavedReview}
+                className="text-indigo-600 text-sm font-medium"
+              >
+                Generate New Review
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
